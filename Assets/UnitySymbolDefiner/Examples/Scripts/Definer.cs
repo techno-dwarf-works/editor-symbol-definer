@@ -2,7 +2,7 @@
 
 namespace UnitySymbolDefiner.Examples
 {
-    public class TestDefiner : MonoBehaviour
+    public class Definer : MonoBehaviour
     {
         
     }

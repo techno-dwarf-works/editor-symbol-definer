@@ -3,8 +3,8 @@ using UnitySymbolDefiner.Attributes;
 
 namespace UnitySymbolDefiner.Examples
 {
-    [CustomEditor(typeof(TestDefiner))]
-    public class TestDefinerEditor : Editor
+    [CustomEditor(typeof(Definer))]
+    public class DefinerEditor : Editor
     {
         public override void OnInspectorGUI()
         {
