@@ -5,17 +5,35 @@ using System.Reflection;
 using System.Threading.Tasks;
 using UnityEditor;
 using UnityEditor.Callbacks;
+using UnityEditor.UIElements;
 using UnityEngine;
+using UnitySymbolDefiner.Attributes;
 
-namespace CorePlugin.Editor.Helpers
+namespace UnitySymbolDefiner
 {
-    public class SymbolDefiner
+    public static class SymbolDefiner
     {
-        private const string Symbol = "SYMBOL_DEFINER_ASSET";
-        private static readonly Dictionary<string, bool> Symbols = new Dictionary<string, bool>
-                                                                   {
-                                                                       { Symbol, true }
-                                                                   };
+        [SymbolDefiner(true)] private const string Symbol = "SYMBOL_DEFINER_ASSET";
+        private const string SymbolDefinerPath = nameof(SymbolDefiner); 
+
+        private class DefineData
+        {
+            public DefineData(bool autoDefine, bool isDefined)
+            {
+                AutoDefine = autoDefine;
+                IsDefined = isDefined;
+            }
+
+            public bool AutoDefine { get; }
+            public bool IsDefined { get; set; }
+        }
+
+        private static Dictionary<string, DefineData> _symbols = new Dictionary<string, DefineData>
+        {
+            { Symbol, new DefineData(true, false) }
+        };
+
+        private static List<string> _allDefines = new List<string>();
 
         private const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic |
                                            BindingFlags.Static | BindingFlags.Instance |
@@ -25,71 +43,105 @@ namespace CorePlugin.Editor.Helpers
         private static async void CollectSymbols()
         {
             var consts = await GetFields();
-            SetScriptingDefine(new KeyValuePair<string, bool>(Symbol, true));
-            var list = AllDefines();
-            var buffer = consts.ToDictionary(value => value, value => false);
-            foreach (var item in buffer.Keys) Symbols[item] = !list.Contains(item);
+            SetScriptingDefine(new KeyValuePair<string, DefineData>(Symbol, new DefineData(true, true)));
+            _allDefines = GetAllDefines();
+            _symbols = consts.ToDictionary(value => value.Key,
+                value => new DefineData(value.Value, _allDefines.Contains(value.Key)));
+
+            foreach (var symbol in _symbols)
+            {
+                SetScriptingDefine(symbol);
+            }
+
+            ScheduleUpdate();
         }
 
-        private static Task<IEnumerable<string>> GetFields()
+        private static Task<Dictionary<string, bool>> GetFields()
         {
-            return Task<IEnumerable<string>>.Factory.StartNew(() => AppDomain.CurrentDomain.GetAssemblies()
-                                                                             .SelectMany(x => x.GetTypes()
-                                                                                               .SelectMany(t => t.GetFields(Flags)
-                                                                                                   .Where(fi => fi.IsLiteral &&
-                                                                                                        !fi.IsInitOnly &&
-                                                                                                        fi.FieldType ==
-                                                                                                        typeof(string)))
-                                                                                               .Select(info => (string)info.GetRawConstantValue())));
+            return Task<Dictionary<string, bool>>.Factory.StartNew(() =>
+                AppDomain.CurrentDomain.GetAssemblies().SelectMany(x => x.GetTypes()
+                        .SelectMany(t => t.GetFields(Flags).Where(IsFieldValid)))
+                    .ToDictionary(info => (string)info.GetRawConstantValue(),
+                        info => info.GetCustomAttribute<SymbolDefinerAttribute>().AutoDefine));
+        }
+
+        private static bool IsFieldValid(FieldInfo fieldInfo)
+        {
+            return fieldInfo.GetCustomAttribute<SymbolDefinerAttribute>() != null && fieldInfo.IsLiteral &&
+                   !fieldInfo.IsInitOnly &&
+                   fieldInfo.FieldType == typeof(string);
         }
 
         /// <summary>
         /// Shows buttons in Inspector.
         /// </summary>
-        public void ShowSymbolsButtons()
+        public static void ShowSymbolsButtons()
         {
-            var bufferSymbols = new Dictionary<string, bool>(Symbols);
-
-            foreach (var symbol in from symbol in bufferSymbols
-                                   let text = symbol.Value ? $"Define {symbol.Key}" : $"Undefine {symbol.Key}"
-                                   where GUILayout.Button(text)
-                                   select symbol)
+            var bufferSymbols = new Dictionary<string, DefineData>(_symbols);
+            bufferSymbols.Remove(Symbol);
+            foreach (var symbol in bufferSymbols.Where(x => !x.Value.AutoDefine)
+                         .Select(symbol => new
+                             { symbol, text = symbol.Value.IsDefined ? $"Undefine {symbol.Key}" : $"Define {symbol.Key}" })
+                         .Where(t => GUILayout.Button(t.text)).Select(t => t.symbol))
             {
-                Symbols[symbol.Key] = !symbol.Value;
-                SetScriptingDefine(symbol);
+                if (symbol.Value.IsDefined)
+                {
+                    UndefineSymbol(symbol.Key);
+                }
+                else
+                {
+                    DefineSymbol(symbol.Key);
+                }
             }
         }
 
-        public void DefineSymbol(string key)
+        private static void SetSymbolValue(string key, bool value)
         {
-            if (!Symbols.TryGetValue(key, out var value)) return;
-            Symbols[key] = !value;
-            SetScriptingDefine(Symbols.FirstOrDefault(x => x.Key.Equals(key)));
+            _symbols[key].IsDefined = value;
+            SetScriptingDefine(new KeyValuePair<string, DefineData>(key, _symbols[key]));
         }
 
-        private static void SetScriptingDefine(KeyValuePair<string, bool> pair)
+        public static void DefineSymbol(string key)
         {
-            var allDefines = AllDefines();
-            allDefines.RemoveAll(string.IsNullOrWhiteSpace);
+            if (!_symbols.ContainsKey(key)) return;
+            SetSymbolValue(key, true);
 
-            if (pair.Value)
+            ScheduleUpdate();
+        }
+
+        public static void UndefineSymbol(string key)
+        {
+            if (!_symbols.ContainsKey(key)) return;
+            SetSymbolValue(key, false);
+
+            ScheduleUpdate();
+        }
+
+        private static void SetScriptingDefine(KeyValuePair<string, DefineData> pair)
+        {
+            _allDefines.RemoveAll(string.IsNullOrWhiteSpace);
+
+            if (pair.Value.IsDefined)
             {
-                if (!allDefines.Contains(pair.Key)) allDefines.Add(pair.Key);
+                if (!_allDefines.Contains(pair.Key)) _allDefines.Add(pair.Key);
             }
             else
             {
-                allDefines.RemoveAll(x => x == pair.Key);
+                _allDefines.RemoveAll(x => x == pair.Key);
             }
+        }
 
-            PlayerSettings.SetScriptingDefineSymbolsForGroup(
-                                                             EditorUserBuildSettings.selectedBuildTargetGroup,
-                                                             string.Join(";", allDefines.ToArray()));
+        private static void ScheduleUpdate()
+        {
+            PlayerSettings.SetScriptingDefineSymbolsForGroup(EditorUserBuildSettings.selectedBuildTargetGroup,
+                string.Join(";", _allDefines.ToArray()));
             AssetDatabase.Refresh();
         }
 
-        private static List<string> AllDefines()
+        private static List<string> GetAllDefines()
         {
-            var definesString = PlayerSettings.GetScriptingDefineSymbolsForGroup(EditorUserBuildSettings.selectedBuildTargetGroup);
+            var definesString =
+                PlayerSettings.GetScriptingDefineSymbolsForGroup(EditorUserBuildSettings.selectedBuildTargetGroup);
             var allDefines = definesString.Split(';').ToList();
             return allDefines;
         }
