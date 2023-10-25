@@ -16,7 +16,7 @@ private const string Symbol = "SYMBOL_DEFINER_ASSET";
 private const string Symbol1 = "SOME_SYMBOL_1";
 
 ///OR
-[SymbolDefiner(] private const string Symbol2 = "SOME_SYMBOL_2";
+[SymbolDefiner] private const string Symbol2 = "SOME_SYMBOL_2";
 ```
 To use `Definer` just add it to any object on scene.
 
